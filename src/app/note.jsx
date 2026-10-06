@@ -1,8 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, TextInput, TouchableOpacity, Alert, ActivityIndicator, StatusBar, KeyboardAvoidingView, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
-import { addDoc, getDoc, updateDoc, doc, collection, serverTimestamp } from 'firebase/firestore';
+import { getDoc, setDoc, updateDoc, doc, collection, serverTimestamp } from 'firebase/firestore';
 import { auth, db } from '../config/firebase';
 import { getErrorMessage } from '../utils/errorMessages';
 
@@ -14,6 +14,7 @@ export default function NoteScreen() {
   const [content, setContent] = useState('');
   const [loading, setLoading] = useState(!!id);
   const [saving, setSaving] = useState(false);
+  const draftRef = useRef(null); // keeps the same id if the user retries saving a new note
 
   useEffect(() => {
     if (!id) return;
@@ -47,23 +48,33 @@ export default function NoteScreen() {
     setSaving(true);
     try {
       const data = { title: title.trim(), content: content.trim(), updatedAt: serverTimestamp() };
-      const op = id
-        ? updateDoc(doc(db, 'users', user.uid, 'notes', id), data)
-        : addDoc(collection(db, 'users', user.uid, 'notes'), { ...data, createdAt: serverTimestamp() });
 
-      // Prevent the screen from hanging if the server does not respond within 8 seconds
+      let op;
+      if (id) {
+        op = updateDoc(doc(db, 'users', user.uid, 'notes', id), data);
+      } else {
+        // Same id on every retry, so a retry never creates a duplicate note
+        if (!draftRef.current) draftRef.current = doc(collection(db, 'users', user.uid, 'notes'));
+        op = setDoc(draftRef.current, { ...data, createdAt: serverTimestamp() });
+      }
+
+      // Do not wait forever if the server does not respond
       const result = await Promise.race([
         op.then(() => 'ok'),
-        new Promise((resolve) => setTimeout(() => resolve('timeout'), 8000)),
+        new Promise((resolve) => setTimeout(() => resolve('timeout'), 10000)),
       ]);
 
-      Alert.alert(
-        result === 'ok' ? 'Note Saved' : 'Saved Offline',
-        result === 'ok'
-          ? 'Your note has been saved successfully.'
-          : 'Your note has been saved on this device and will sync automatically once your connection is restored.',
-        [{ text: 'OK', onPress: () => router.back() }]
-      );
+      if (result === 'ok') {
+        Alert.alert('Note Saved', 'Your note has been saved successfully.', [
+          { text: 'OK', onPress: () => router.back() },
+        ]);
+      } else {
+        // Stay on this screen so the text is not lost and the user can try again
+        Alert.alert(
+          'Connection Problem',
+          'We could not reach the server, so your note has not been saved yet. Please check your internet connection and tap Save again.'
+        );
+      }
     } catch (e) {
       Alert.alert('Save Failed', getErrorMessage(e));
     } finally {

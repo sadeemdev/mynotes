@@ -1,6 +1,6 @@
 import { initializeApp, getApps, getApp } from "firebase/app";
 import { initializeAuth, getReactNativePersistence, getAuth } from "firebase/auth";
-import { initializeFirestore, getFirestore } from "firebase/firestore";
+import { initializeFirestore, getFirestore, setLogLevel } from "firebase/firestore";
 import ReactNativeAsyncStorage from "@react-native-async-storage/async-storage";
 
 const firebaseConfig = {
@@ -23,6 +23,9 @@ try {
 } catch (error) {
   auth = getAuth(app);
 }
+
+// TEMPORARY: detailed Firestore logs in the terminal (remove after debugging)
+setLogLevel("debug");
 
 // React Native mein normal connection aksar atak jati hai, isliye long polling
 let db;
