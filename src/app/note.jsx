@@ -69,10 +69,40 @@ export default function NoteScreen() {
           { text: 'OK', onPress: () => router.back() },
         ]);
       } else {
+        // TEMPORARY DIAGNOSTIC: ask Firestore directly over plain HTTPS (with the API key, like the SDK does)
+        let diag = '';
+        try {
+          const token = await user.getIdToken();
+          const { projectId, apiKey } = db.app.options;
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 8000);
+          const res = await fetch(
+            `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${user.uid}/notes?pageSize=1`,
+            { headers: { Authorization: `Bearer ${token}`, 'x-goog-api-key': apiKey }, signal: controller.signal }
+          );
+          clearTimeout(timer);
+          const text = await res.text();
+          if (res.ok) {
+            diag = `HTTP ${res.status} - server reachable, rules OK`;
+          } else {
+            let reason = '';
+            try {
+              const j = JSON.parse(text);
+              const reasons = (j.error?.details || []).map((d) => d.reason).filter(Boolean).join(', ');
+              reason = `${reasons} | ${j.error?.message || ''}`;
+            } catch (e) {
+              reason = text.slice(0, 200);
+            }
+            diag = `HTTP ${res.status} - ${reason}`;
+          }
+        } catch (err) {
+          diag = `Network error - ${err.message}`;
+        }
+
         // Stay on this screen so the text is not lost and the user can try again
         Alert.alert(
           'Connection Problem',
-          'We could not reach the server, so your note has not been saved yet. Please check your internet connection and tap Save again.'
+          `We could not reach the server, so your note has not been saved yet. Please tap Save again.\n\nDiagnostic: ${diag}`
         );
       }
     } catch (e) {

@@ -1,16 +1,15 @@
 import { initializeApp, getApps, getApp } from "firebase/app";
 import { initializeAuth, getReactNativePersistence, getAuth } from "firebase/auth";
-import { initializeFirestore, getFirestore, setLogLevel } from "firebase/firestore";
+import { initializeFirestore, getFirestore } from "firebase/firestore";
 import ReactNativeAsyncStorage from "@react-native-async-storage/async-storage";
 
 const firebaseConfig = {
-  apiKey: "AIzaSyBdsqflxwSGst4yW3UsRE5p_bJbNe0QpNw",
-  authDomain: "fitpluse-7cde0.firebaseapp.com",
-  projectId: "fitpluse-7cde0", // Firebase ka purana naam hai, isko mat badlein
-  storageBucket: "fitpluse-7cde0.firebasestorage.app",
-  messagingSenderId: "424846927538",
-  appId: "1:424846927538:web:e53cc6244e3434f1ce0bab",
-  measurementId: "G-Z0YCVFR0CP"
+  apiKey: "AIzaSyCP7MHGiuqVggZLA4MT8vsxAjx_HltL8H8",
+  authDomain: "fitpluse-483a7.firebaseapp.com",
+  projectId: "fitpluse-483a7",
+  storageBucket: "fitpluse-483a7.firebasestorage.app",
+  messagingSenderId: "310599681334",
+  appId: "1:310599681334:web:5bad79713958e1bb671f97",
 };
 
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
@@ -23,9 +22,6 @@ try {
 } catch (error) {
   auth = getAuth(app);
 }
-
-// TEMPORARY: detailed Firestore logs in the terminal (remove after debugging)
-setLogLevel("debug");
 
 // React Native mein normal connection aksar atak jati hai, isliye long polling
 let db;
