@@ -1,20 +1,45 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, TextInput, TouchableOpacity, Alert, ActivityIndicator, StatusBar, KeyboardAvoidingView, Platform } from 'react-native';
+import { View, TextInput, ActivityIndicator, KeyboardAvoidingView, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { getDoc, setDoc, updateDoc, doc, collection, serverTimestamp } from 'firebase/firestore';
 import { auth, db } from '../config/firebase';
 import { getErrorMessage } from '../utils/errorMessages';
+import { useTheme } from '../theme/ThemeContext';
+import { useDialog } from '../components/DialogProvider';
+import BackButton from '../components/BackButton';
+import PrimaryButton from '../components/PrimaryButton';
+
+// Resolves to 'ok' when the save finishes, or 'timeout' if the server does not answer in time
+const withTimeout = (promise, ms) =>
+  new Promise((resolve, reject) => {
+    const timer = setTimeout(() => resolve('timeout'), ms);
+    promise.then(
+      () => {
+        clearTimeout(timer);
+        resolve('ok');
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      }
+    );
+  });
 
 // Handles both creating a new note (no id) and editing an existing one (id present)
 export default function NoteScreen() {
   const router = useRouter();
+  const { colors } = useTheme();
+  const { showDialog } = useDialog();
   const { id } = useLocalSearchParams();
+
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
   const [loading, setLoading] = useState(!!id);
   const [saving, setSaving] = useState(false);
-  const draftRef = useRef(null); // keeps the same id if the user retries saving a new note
+  const [missingCreatedAt, setMissingCreatedAt] = useState(false); // old notes get createdAt on first edit
+  const draftRef = useRef(null); // same id on retry, so a retry never creates a duplicate note
+  const savedRef = useRef(false); // true once a new note has been saved
 
   useEffect(() => {
     if (!id) return;
@@ -22,11 +47,13 @@ export default function NoteScreen() {
       try {
         const snap = await getDoc(doc(db, 'users', auth.currentUser.uid, 'notes', id));
         if (snap.exists()) {
-          setTitle(snap.data().title || '');
-          setContent(snap.data().content || '');
+          const data = snap.data();
+          setTitle(data.title || '');
+          setContent(data.content || '');
+          setMissingCreatedAt(!data.createdAt);
         }
       } catch (e) {
-        Alert.alert('Unable to Load Note', getErrorMessage(e));
+        showDialog({ title: 'Unable to Load Note', message: getErrorMessage(e) });
       } finally {
         setLoading(false);
       }
@@ -36,130 +63,89 @@ export default function NoteScreen() {
 
   const handleSave = async () => {
     if (!title.trim() && !content.trim()) {
-      Alert.alert('Empty Note', 'Please add a title or some content before saving.');
+      showDialog({ title: 'Empty Note', message: 'Please add a title or some content before saving.' });
       return;
     }
     const user = auth.currentUser;
     if (!user) {
-      Alert.alert('Session Expired', 'Please sign in again to continue.');
+      showDialog({ title: 'Session Expired', message: 'Please sign in again to continue.' });
       return;
     }
 
     setSaving(true);
     try {
+      // updatedAt changes on every save
       const data = { title: title.trim(), content: content.trim(), updatedAt: serverTimestamp() };
 
-      let op;
+      let noteRef;
       if (id) {
-        op = updateDoc(doc(db, 'users', user.uid, 'notes', id), data);
+        noteRef = doc(db, 'users', user.uid, 'notes', id);
       } else {
-        // Same id on every retry, so a retry never creates a duplicate note
         if (!draftRef.current) draftRef.current = doc(collection(db, 'users', user.uid, 'notes'));
-        op = setDoc(draftRef.current, { ...data, createdAt: serverTimestamp() });
+        noteRef = draftRef.current;
       }
 
-      // Do not wait forever if the server does not respond
-      const result = await Promise.race([
-        op.then(() => 'ok'),
-        new Promise((resolve) => setTimeout(() => resolve('timeout'), 10000)),
-      ]);
+      const alreadyExists = !!id || savedRef.current;
+      const operation = alreadyExists
+        ? updateDoc(noteRef, missingCreatedAt ? { ...data, createdAt: serverTimestamp() } : data)
+        : setDoc(noteRef, { ...data, createdAt: serverTimestamp() }); // createdAt is set only once, when created
+
+      const result = await withTimeout(operation, 10000);
 
       if (result === 'ok') {
-        Alert.alert('Note Saved', 'Your note has been saved successfully.', [
-          { text: 'OK', onPress: () => router.back() },
-        ]);
+        savedRef.current = true;
+        setMissingCreatedAt(false);
+        showDialog({
+          title: 'Note Saved',
+          message: 'Your note has been saved successfully.',
+          buttons: [{ text: 'OK', onPress: () => router.back() }],
+        });
       } else {
-        // TEMPORARY DIAGNOSTIC: ask Firestore directly over plain HTTPS (with the API key, like the SDK does)
-        let diag = '';
-        try {
-          const token = await user.getIdToken();
-          const { projectId, apiKey } = db.app.options;
-          const controller = new AbortController();
-          const timer = setTimeout(() => controller.abort(), 8000);
-          const res = await fetch(
-            `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${user.uid}/notes?pageSize=1`,
-            { headers: { Authorization: `Bearer ${token}`, 'x-goog-api-key': apiKey }, signal: controller.signal }
-          );
-          clearTimeout(timer);
-          const text = await res.text();
-          if (res.ok) {
-            diag = `HTTP ${res.status} - server reachable, rules OK`;
-          } else {
-            let reason = '';
-            try {
-              const j = JSON.parse(text);
-              const reasons = (j.error?.details || []).map((d) => d.reason).filter(Boolean).join(', ');
-              reason = `${reasons} | ${j.error?.message || ''}`;
-            } catch (e) {
-              reason = text.slice(0, 200);
-            }
-            diag = `HTTP ${res.status} - ${reason}`;
-          }
-        } catch (err) {
-          diag = `Network error - ${err.message}`;
-        }
-
         // Stay on this screen so the text is not lost and the user can try again
-        Alert.alert(
-          'Connection Problem',
-          `We could not reach the server, so your note has not been saved yet. Please tap Save again.\n\nDiagnostic: ${diag}`
-        );
+        showDialog({
+          title: 'Connection Problem',
+          message:
+            'We could not reach the server, so your note has not been saved yet. Please check your internet connection and tap Save again.',
+        });
       }
     } catch (e) {
-      Alert.alert('Save Failed', getErrorMessage(e));
+      showDialog({ title: 'Save Failed', message: getErrorMessage(e) });
     } finally {
       setSaving(false);
     }
   };
 
   return (
-    <SafeAreaView className="flex-1 bg-[#0B0B0E]">
-      <StatusBar barStyle="light-content" />
-      <KeyboardAvoidingView className="flex-1" behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        <View className="flex-1 px-6 pt-2">
-
+    <SafeAreaView style={{ flex: 1, backgroundColor: colors.background }}>
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <View style={{ flex: 1, paddingHorizontal: 24, paddingTop: 8 }}>
           {/* Top bar */}
-          <View className="flex-row justify-between items-center mb-6">
-            <TouchableOpacity
-              onPress={() => router.back()}
-              className="flex-row items-center bg-[#18181B] border border-gray-800 px-4 py-2.5 rounded-2xl"
-            >
-              <Text className="text-[#00E676] text-lg font-black mr-2">←</Text>
-              <Text className="text-white text-sm font-bold tracking-wider uppercase">Back</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              onPress={handleSave}
-              disabled={saving || loading}
-              className="bg-[#00E676] px-6 py-2.5 rounded-2xl"
-            >
-              {saving ? (
-                <ActivityIndicator color="#0B0B0E" />
-              ) : (
-                <Text className="text-[#0B0B0E] font-black text-sm uppercase tracking-wider">Save</Text>
-              )}
-            </TouchableOpacity>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
+            <BackButton />
+            <PrimaryButton label="Save" compact onPress={handleSave} loading={saving} disabled={loading} />
           </View>
 
           {loading ? (
-            <ActivityIndicator color="#00E676" size="large" />
+            <ActivityIndicator color={colors.accent} size="large" />
           ) : (
             <>
               <TextInput
                 value={title}
                 onChangeText={setTitle}
                 placeholder="Title"
-                placeholderTextColor="#52525B"
-                className="text-white text-3xl font-black mb-4"
+                placeholderTextColor={colors.placeholder}
+                selectionColor={colors.accent}
+                style={{ color: colors.text, fontSize: 30, fontWeight: '900', marginBottom: 16 }}
               />
               <TextInput
                 value={content}
                 onChangeText={setContent}
                 placeholder="Start writing your note..."
-                placeholderTextColor="#52525B"
+                placeholderTextColor={colors.placeholder}
+                selectionColor={colors.accent}
                 multiline
                 textAlignVertical="top"
-                className="flex-1 text-gray-200 text-base leading-6"
+                style={{ flex: 1, color: colors.text, fontSize: 16, lineHeight: 24 }}
               />
             </>
           )}
